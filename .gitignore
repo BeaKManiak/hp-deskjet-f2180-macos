@@ -1,0 +1,9 @@
+# Build artifacts, local caches, personal material
+*.dmg
+*.dmg.part
+*.pdf
+scans/
+*.log
+.DS_Store
+.build/
+tools/f2180-scan
