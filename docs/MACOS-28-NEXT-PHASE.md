@@ -31,10 +31,13 @@ zero-cost constraint ever relaxes.
 
 ## Recommended sequence
 
-1. **Now, while everything works:** capture the state that a future port will need (see checklist).
+1. **Now, while everything works:** capture the state that a future port will need and make a bootable
+   macOS 27 clone (see checklist).
 2. **Before macOS 28 ships:** freeze at 27. Do not let the update install.
 3. **Optional, bounded:** attempt B. If it prints, consider C. If B fails after three sessions,
    stop and live with A until the printer is replaced.
+
+Executable form, with commands and the patch series: [PHASE-B-C-RUNBOOK.md](PHASE-B-C-RUNBOOK.md).
 
 ## Phase B — arm64 `hpcups`, printing only
 
@@ -42,6 +45,7 @@ zero-cost constraint ever relaxes.
 
 - No reimplementation of the DJ3320 encoder. `hpcups` already is that encoder.
 - No modification of Apple's installed tree. The port installs *beside* it so both can be tested.
+  See [Rollback](#rollback-back-to-the-rosetta-solution) for the isolation rules that keep that true.
 
 ### Scope
 
@@ -50,13 +54,15 @@ zero-cost constraint ever relaxes.
    - `<unistd.h>` / `<sys/time.h>` for `usleep` / `gettimeofday`
    - `CFPlugInCOM` `ULONG` (32-bit) vs `hpip.h` `ULONG` clash
    - `musb.c`: STALL on IEEE-1284 `GET_DEVICE_ID`; `musb_probe_devices` closing a NULL handle
-   - configure paths: `/etc/hp` → a writable prefix
+   - configure paths: `/etc/hp` → a writable prefix (`--prefix=/opt/hp-arm64`, so removing the
+     experiment is `rm -rf`)
 2. Decide the I/O question early — this is the risk: does `hpcups` write raster to stdout (letting
    macOS's own arm64 `usb` backend drive the device), or does it require HPLIP's `hp` backend over a
    socket? If the latter, build `hp` too; both are libusb-based.
-3. Reuse HPLIP's `ppd/hpcups/hp-deskjet_f2100_series.ppd` verbatim, but point `*cupsFilter` at the
-   absolute path of the new binary (macOS cannot write filters into SIP-protected
-   `/usr/libexec/cups/filter`).
+3. Copy HPLIP's `ppd/hpcups/hp-deskjet_f2100_series.ppd` verbatim to a new name, and point
+   `*cupsFilter` at the absolute path of the new binary (macOS cannot write filters into
+   SIP-protected `/usr/libexec/cups/filter`). **Copy it — never edit Apple's PPD in place**: the
+   working `F2180` queue uses that file.
 4. Ad-hoc codesign every arm64 binary (`codesign --force -s - <file>`); unsigned arm64 binaries are
    killed by the kernel.
 5. Install under `/Library/Printers/hp-arm64/` and create a second queue (`F2180-arm64`) so the
@@ -95,10 +101,70 @@ Harder, and independent of B.
 4. Note the USB contention: the print queue can hold the interface. `cupsdisable` → scan →
    `cupsenable` is the known workaround.
 
+## Rollback: back to the Rosetta solution
+
+Installing beside the working driver is what makes rollback cheap. Keep it that way.
+
+### Hard rules that preserve rollback
+
+Phase B and Phase C must never touch:
+
+| Never modify | Why |
+|---|---|
+| `/Library/Printers/hp/` | the working x86_64 filter, frameworks and utilities |
+| `/Library/Image Capture/Devices/HPScanner.app` | the working scanner plugin |
+| `/Library/Printers/PPDs/Contents/Resources/HP Deskjet F2100 series.ppd.gz` | the PPD the working queue uses — copy it, never edit it |
+| the `F2180` queue | leave it present, enabled and default |
+
+Keep the build self-contained (`--prefix=/opt/hp-arm64`, not `/usr/local` or `/etc/hp`) and uninstalling
+the experiment is `rm -rf`. Phase C's LaunchAgent is additive, and `cupsdisable`/`cupsenable` toggling
+is reversible.
+
+### Undoing the port
+
+```sh
+lpadmin -x F2180-arm64
+sudo rm -rf /Library/Printers/hp-arm64
+sudo rm -f "/Library/Printers/PPDs/Contents/Resources/HP Deskjet F2100 series (arm64).ppd.gz"
+
+# Phase C only
+launchctl bootout gui/$(id -u)/<label> 2>/dev/null || true
+rm -f ~/Library/LaunchAgents/<label>.plist
+```
+
+**Do not use `scripts/99-rollback.sh` for this.** It uninstalls the *current* solution — queue `F2180`,
+`/Library/Printers/hp`, the HP PPDs — and would leave `hp-arm64` behind. It is for abandoning the
+project, not for undoing Phase B or C.
+
+Then prove the old path still works: `./scripts/50-verify.sh`, `lp -d F2180 test.pdf`, and one scan
+from Image Capture. If a failed job left the printer wedged, `cancel -a F2180`, `cupsdisable` →
+`cupsenable`, and power-cycle it.
+
+### The part that cannot be rolled back
+
+Rollback restores the software, not the runtime. The current solution *is* Rosetta 2, and Rosetta is
+gone in macOS 28:
+
+| Situation | Rollback |
+|---|---|
+| Still on macOS 27, with B/C installed | Works — the steps above are enough |
+| Upgraded to macOS 28 and the port failed | Nothing to roll back to; the x86_64 path cannot run |
+| Want macOS 27 back after upgrading | Erase + DFU restore only, and only while Apple still signs 27 — impossible on a Mac that shipped with 28 |
+
+So the real safety net is a **bootable macOS 27 volume** (external SSD, clone or Time Machine), made
+*before* Phase B starts. Booting it is the only true undo once 28 is on the internal disk.
+
+### Where to experiment
+
+Run Phase B on a separate volume or a second Mac where possible. Do not upgrade the daily driver until
+`F2180-arm64` has printed a page: the stop rule assumes the fallback still runs.
+
 ## Checklist to capture now (while the Rosetta version still works)
 
 - [ ] Keep this repo, and a copy of Apple's DMG outside git (it is not committed; Apple removes old
       downloads).
+- [ ] A bootable clone of the working macOS 27 install on an external SSD. This is the only rollback
+      that survives installing macOS 28.
 - [ ] `cp /etc/cups/ppd/F2180.ppd ~/hp-f2180-archive/` — the exact working PPD as CUPS sees it.
 - [ ] `lpoptions -p F2180 -l > ~/hp-f2180-archive/lpoptions.txt`.
 - [ ] `system_profiler SPUSBDataType > ~/hp-f2180-archive/usb.txt` while the printer is attached
@@ -116,6 +182,8 @@ Harder, and independent of B.
 | macOS 28 also changes CUPS filter sandboxing | Verify with a trivial arm64 filter before porting |
 | Scanner protocol (`scan-type=1`) is the least-documented path | Do not start C until B is done |
 | Apple removes the 10.6 DMG | Keep the local copy; it is the only source of the PPD |
+| Phase B/C damages the working install, leaving no fallback | Isolation rules above; `50-verify.sh` after every session |
+| macOS 28 is installed before the port works | Bootable macOS 27 volume, made in advance |
 
 ## Decision log (fill in when it happens)
 
