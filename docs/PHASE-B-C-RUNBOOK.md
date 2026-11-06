@@ -1,7 +1,7 @@
 # Runbook: Phase B and C, arm64 print and scan
 
-**Status:** scaffolding committed, nothing installed. Phase B validated up to a working
-filter binary and a real DJ3320/Lidil job stream; no page has been printed from it yet.
+**Status:** Phase B printed its first page on 2026-11-06 (macOS 27.2, queue `F2180-arm64`).
+The Rosetta queue is untouched. The print matrix and Phase C are still open.
 
 This is the executable form of [MACOS-28-NEXT-PHASE.md](MACOS-28-NEXT-PHASE.md). It assumes
 the full change is wanted: native `hpcups` first, the scanner stack second, then the move to
@@ -17,9 +17,11 @@ macOS 28.
 | The closed `libImageProcessor` is not needed | it is only created for `ljzjstream` platforms (`HPCupsFilter.cpp`) |
 | The raster chain exists on macOS | `/usr/libexec/cups/filter/cgpdftoraster` is present |
 | Filter produces printer data | PDF → `cgpdftoraster` → `hpcups` gave 558 KB starting `24 01 00 00` |
+| The printer accepts the stream | job `F2180-arm64-16` printed a page, 2026-11-06 |
+| The filter is native, not Rosetta | thin arm64 binary; `arch -x86_64` fails with "Bad CPU type in executable" |
 
-What is **not** proven: that the F2180 accepts that stream. That is session 2, and it is the
-one thing that decides the whole project.
+What is **not** proven yet: colour/greyscale and 600 dpi across the print-mode matrix (session 3),
+and the whole scanner path (Phase C).
 
 ## Isolation rules
 
@@ -85,11 +87,19 @@ sudo lpadmin -p F2180-arm64 -E -v "$DEV" -P /opt/hp-arm64/share/hp-f2100-arm64.p
   -D "HP Deskjet F2180 (arm64)" -o printer-error-policy=retry-job
 
 lp -d F2180-arm64 /path/to/test.pdf
-ps -Ao pid,arch,comm | grep '[h]pcups'      # must say arm64 while the job runs
+
+# the filter is a thin arm64 binary, so Rosetta cannot be involved:
+arch -arm64 /opt/hp-arm64/bin/hpcups     # prints its usage line
+arch -x86_64 /opt/hp-arm64/bin/hpcups    # must fail: "Bad CPU type in executable"
 ```
 
-A page appearing is not proof: check the architecture. If a job "succeeds" but nothing
-prints, compare `/var/log/cups/error_log` with the archived successful job from session 0.
+`ps -o arch` is Linux-only; macOS has no such keyword. For live proof while a job runs:
+`sudo vmmap "$(pgrep -f hpcups)" | grep 'Code Type'` → `ARM64` (`X86-64 (Translated)` would
+mean Rosetta). If a job "succeeds" but nothing prints, compare `/var/log/cups/error_log` with
+the archived successful job from session 0.
+
+`lpadmin` prints "Printer drivers are deprecated…"; that is expected on 27 and is the risk
+noted in the plan.
 
 Exit: one A4 page from `F2180-arm64`, `F2180` still works.
 

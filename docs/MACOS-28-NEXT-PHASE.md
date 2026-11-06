@@ -76,8 +76,10 @@ arch -arm64 /Library/Printers/hp-arm64/.../hpcups     # must run without Rosetta
 lp -d F2180-arm64 test.pdf                            # must print
 ```
 
-Then verify the filter actually used is the arm64 one, e.g. `ps` during the job, or a wrapper that
-logs `uname -m`. A print that silently fell back to Apple's x86_64 filter proves nothing.
+Then verify the filter actually used is the arm64 one: the binary is thin arm64, so
+`arch -x86_64 <filter>` must fail with "Bad CPU type in executable", and during a job
+`vmmap <pid> | grep 'Code Type'` must say `ARM64`. A print that silently fell back to Apple's
+x86_64 filter proves nothing.
 
 ### Stop rule
 
